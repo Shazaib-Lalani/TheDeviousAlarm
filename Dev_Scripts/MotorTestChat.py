@@ -1,131 +1,190 @@
-# One fast 360° rotation with A4988 + ESP32 (MicroPython)
-# - Full steps (fastest). Change to 2/4/8/16 if you need smoother motion.
-# - Short accel/decel ramp to avoid stalls.
-#
-# Wiring defaults (Adafruit ESP32 Feather V2 friendly):
-#   STEP -> IO25, DIR -> IO33, EN -> IO32 (active LOW)
-#   MS1 -> IO14, MS2 -> IO27, MS3 -> IO26
-#
-# Power & safety:
-#   - Set A4988 current limit first.
-#   - Put a ≥47 µF electrolytic across VMOT–GND near the driver.
-#   - Connect motor BEFORE power.
-
 from machine import Pin
-from time import sleep_us, sleep_ms, ticks_us, ticks_diff
+import time
 
-# ---------------- Pin config (edit if needed) ----------------
-PIN_STEP = 25
-PIN_DIR  = 33
-PIN_EN   = 32
-PIN_MS1  = 14
-PIN_MS2  = 27
-PIN_MS3  = 26
-# -------------------------------------------------------------
+class A4988Stepper:
+    def __init__(self, step_pin, dir_pin, enable_pin=None, steps_per_rev=200):
+        """
+        step_pin   : GPIO number for STEP
+        dir_pin    : GPIO number for DIR
+        enable_pin : GPIO number for ENABLE (optional, can be None)
+        steps_per_rev : full steps per revolution (200 for 1.8° NEMA 17)
+        """
 
-FULL_STEPS_PER_REV = 200  # most NEMA17 are 1.8°/step
-MIN_STEP_PULSE_US  = 2    # A4988 min ~1 µs; use 2 µs for margin
-MIN_STEP_SPACE_US  = 2
+        self.step = Pin(step_pin, Pin.OUT, value=0)
+        self.dir  = Pin(dir_pin,  Pin.OUT, value=0)
 
-# Choose aggressive but safe-ish top speed:
-# For many NEMA17+A4988 setups, ~400–800 RPM is near the practical ceiling.
-TARGET_RPM   = 600       # bump up/down if your rig can/can’t handle it
-ACCEL_FRAC   = 0.1       # 10% accel + 10% decel of total steps (short ramp)
-MICROSTEP    = 1         # 1, 2, 4, 8, 16
+        self.enable = None
+        if enable_pin is not None:
+            # On A4988, ENABLE is usually:
+            #   LOW  = enabled
+            #   HIGH = disabled
+            self.enable = Pin(enable_pin, Pin.OUT, value=1)  # start disabled
 
+        self.steps_per_rev = steps_per_rev
 
-class A4988:
-    _ms_map = {
-        1:(0,0,0),
-        2:(1,0,0),
-        4:(0,1,0),
-        8:(1,1,0),
-        16:(1,1,1),
-    }
+    def _enable_driver(self):
+        if self.enable is not None:
+            self.enable.value(0)   # LOW = enabled
 
-    def __init__(self):
-        self.step = Pin(PIN_STEP, Pin.OUT, value=0)
-        self.dir  = Pin(PIN_DIR,  Pin.OUT, value=0)
-        self.en   = Pin(PIN_EN,   Pin.OUT, value=1)  # 1=disabled
-        self.ms1  = Pin(PIN_MS1,  Pin.OUT, value=0)
-        self.ms2  = Pin(PIN_MS2,  Pin.OUT, value=0)
-        self.ms3  = Pin(PIN_MS3,  Pin.OUT, value=0)
-        self.microstep = 1
-        self.set_microstep(MICROSTEP)
+    def _disable_driver(self):
+        if self.enable is not None:
+            self.enable.value(1)   # HIGH = disabled
 
-    def enable(self):
-        self.en.value(0)
-        sleep_ms(2)
-
-    def disable(self):
-        self.en.value(1)
-
-    def set_dir(self, cw=True):
-        self.dir.value(0 if cw else 1)
-
-    def set_microstep(self, m):
-        ms = self._ms_map.get(m)
-        if not ms:
-            raise ValueError("Microstep must be 1,2,4,8,16")
-        self.microstep = m
-        self.ms1.value(ms[0]); self.ms2.value(ms[1]); self.ms3.value(ms[2])
-        sleep_ms(1)
-
-    def _half_delay_from_rpm(self, rpm):
-        steps_per_rev = FULL_STEPS_PER_REV * self.microstep
-        steps_per_sec = (steps_per_rev * rpm) / 60.0
-        period_us = 1_000_000.0 / steps_per_sec
-        return max(period_us/2.0 - MIN_STEP_PULSE_US, 0)
-
-    def _do_step(self, half_delay_us):
+    def _step_once(self, delay_us):
+        """
+        Generate one step pulse with a given half-period delay (microseconds).
+        Full step period is 2 * delay_us.
+        """
         self.step.value(1)
-        sleep_us(MIN_STEP_PULSE_US)
+        time.sleep_us(delay_us)
         self.step.value(0)
-        sleep_us(int(max(half_delay_us, MIN_STEP_SPACE_US)))
+        time.sleep_us(delay_us)
 
-    def move_steps(self, steps, rpm, accel_frac=0.1):
-        if steps == 0: return
-        total = abs(int(steps))
-        self.set_dir(steps > 0)
-        self.enable()
+    def move_steps(self, steps, rpm=60, direction=None, hold_enabled=False):
+        """
+        Move a given number of full steps at a given speed (rpm).
 
-        a = max(0.0, min(0.45, float(accel_frac)))
-        n_accel = int(total * a)
-        n_decel = int(total * a)
-        n_flat  = max(0, total - n_accel - n_decel)
+        steps       : signed integer number of steps
+                      (positive = one direction, negative = opposite)
+        rpm         : speed in revolutions per minute
+        direction   : optional explicit direction (+1 or -1).
+                      If None, direction is taken from the sign of 'steps'.
+        hold_enabled: if False, disables driver after movement (if ENABLE pin given)
+        """
 
-        target_hd = self._half_delay_from_rpm(rpm)
-        start_hd  = target_hd * 5.0  # quick ramp from ~5x slower
+        if steps == 0:
+            return
 
-        def ramp(n, start_d, end_d):
-            if n <= 0: return []
-            step = (end_d - start_d) / n
-            return [start_d + i*step for i in range(n)]
+        # Determine direction
+        if direction is not None:
+            dir_val = 1 if direction > 0 else 0
+        else:
+            dir_val = 1 if steps > 0 else 0
 
-        accel = ramp(n_accel, start_hd, target_hd)
-        flat  = [target_hd]*n_flat
-        decel = ramp(n_decel, target_hd, start_hd)
+        self.dir.value(dir_val)
 
+        step_count = abs(int(steps))
+
+        # Convert RPM to delay between step edges
+        # Steps per second = rpm * steps_per_rev / 60
+        # Period per step = 1 / steps_per_second
+        # Use half-period for high and low times.
+        if rpm <= 0:
+            raise ValueError("rpm must be > 0")
+
+        steps_per_sec = rpm * self.steps_per_rev / 60.0
+        period_s = 1.0 / steps_per_sec
+        half_period_us = int(period_s * 1_000_000 / 2)
+
+        if half_period_us < 2:
+            # Prevent zero or crazy high speed
+            half_period_us = 2
+
+        self._enable_driver()
+
+        for _ in range(step_count):
+            self._step_once(half_period_us)
+
+        if not hold_enabled:
+            self._disable_driver()
+
+    def move_degrees(self, angle_deg, rpm=60, hold_enabled=False):
+        """
+        Rotate the motor by a specified angle in degrees at a given rpm.
+
+        angle_deg   : signed angle in degrees (+ = one direction, - = opposite)
+        rpm         : speed in RPM
+        hold_enabled: if False, disables driver after movement
+        """
+
+        # steps = angle / 360 * steps_per_rev
+        steps_f = angle_deg / 360.0 * self.steps_per_rev
+        steps = int(round(steps_f))
+
+        self.move_steps(steps, rpm=rpm, hold_enabled=hold_enabled)
+
+    def move_revolutions(self, revolutions, rpm=60, hold_enabled=False):
+        """
+        Rotate the motor by a specified number of revolutions.
+
+        revolutions : signed number of revs (+ or -)
+        rpm         : speed in RPM
+        """
+        steps_f = revolutions * self.steps_per_rev
+        steps = int(round(steps_f))
+        self.move_steps(steps, rpm=rpm, hold_enabled=hold_enabled)
+
+    def spin_continuous(self, rpm=60, direction=1):
+        """
+        Spin continuously at a given RPM until interrupted (Ctrl+C).
+        Blocking call.
+        """
+        if rpm <= 0:
+            raise ValueError("rpm must be > 0")
+
+        dir_val = 1 if direction > 0 else 0
+        self.dir.value(dir_val)
+
+        steps_per_sec = rpm * self.steps_per_rev / 60.0
+        period_s = 1.0 / steps_per_sec
+        half_period_us = int(period_s * 1_000_000 / 2)
+
+        if half_period_us < 2:
+            half_period_us = 2
+
+        self._enable_driver()
         try:
-            for d in accel: self._do_step(d)
-            for d in flat:  self._do_step(d)
-            for d in decel: self._do_step(d)
-        finally:
-            self.disable()
+            while True:
+                self._step_once(half_period_us)
+        except KeyboardInterrupt:
+            # Stop on Ctrl+C
+            self._disable_driver()
+            print("Spin stopped")
 
 
-def rotate_360_fast(clockwise=True):
-    drv = A4988()
-    drv.set_microstep(MICROSTEP)          # keep at 1 for highest practical speed
-    steps_per_rev = FULL_STEPS_PER_REV * MICROSTEP
-    drv.move_steps(steps_per_rev if clockwise else -steps_per_rev,
-                   rpm=TARGET_RPM,
-                   accel_frac=ACCEL_FRAC)
+# ----------------------------------------------------------------------
+# USER CONFIGURATION SECTION
+# ----------------------------------------------------------------------
+# Change these pin numbers to match whatever pins you want to use
+# on the Adafruit ESP32 Feather V2.
+STEP_PIN   = 25   # example: GPIO12
+DIR_PIN    = 26   # example: GPIO13
+ENABLE_PIN = 14   # example: GPIO14 (optional; set to None if not wired)
+SLEEP_PIN = 14
+# Full-step NEMA 17 is usually 200 steps / rev
+STEPS_PER_REV = 200
 
 
-# ------------------- Run once -------------------
+motor = A4988Stepper(
+    step_pin=STEP_PIN,
+    dir_pin=DIR_PIN,
+    enable_pin=ENABLE_PIN,
+    steps_per_rev=STEPS_PER_REV
+)
+
+# ----------------------------------------------------------------------
+# EXAMPLE USAGE
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
-    # One full revolution at near max speed
-    for i in range(10):
-        rotate_360_fast(clockwise=True)
-    print("done")
+    # Example 1: Move +90 degrees at 30 RPM
+    print("Rotating +90 degrees at 30 RPM...")
+    motor.move_degrees(90, rpm=30)
+
+    time.sleep(1)
+
+    # Example 2: Move -180 degrees at 60 RPM (reverse)
+    print("Rotating -180 degrees at 60 RPM...")
+    motor.move_degrees(-180, rpm=60)
+
+    time.sleep(1)
+
+    # Example 3: One full revolution at 120 RPM
+    while True:
+        print("1 full revolution at 120 RPM...")
+        motor.move_revolutions(1, rpm=120)
+
+        time.sleep(1)
+
+    # Example 4: Continuous spin (Ctrl+C to stop)
+    # print("Spinning continuously at 60 RPM (Ctrl+C to stop)...")
+    # motor.spin_continuous(rpm=60, direction=1)
