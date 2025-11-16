@@ -1,15 +1,34 @@
 # esp1.py — Bed node: acts on "Motor ON"/"Motor OFF" strings from ESP3
 # MicroPython (ESP32)
-import network, espnow, machine, utime
+import network
+import espnow
+import machine 
+from time import sleep
+import utime
 
 # ====== EDIT THESE ======
 MAC_COORD = b"\x14\x2b\x2f\xae\xbe\x44"   # <-- paste ESP3 (door) STA MAC
 CHANNEL   = 1
-LED_PIN   = 2   # onboard LED on many ESP32 dev boards; change if needed
+LED_PIN   = 13   # onboard LED on many ESP32 dev boards; change if needed
 # ========================
 
 MSG_ON  = "Motor ON"
 MSG_OFF = "Motor OFF"
+
+# ---- ESP-NOW Setup
+
+# Initialize WLAN interface for ESP-NOW
+#sta = network.WLAN(network.STA_IF)
+#sta.active(True)
+#sta.disconnect()
+# Set WiFi channel to 1 (must match sender)
+#sta.config(channel=1)
+# Initialize ESP-NOW
+#e = espnow.ESPNow()
+#e.active(True)
+
+#led = Pin()
+
 
 # ---- Radio / ESP-NOW ----
 wlan = network.WLAN(network.STA_IF); wlan.active(True)
@@ -36,6 +55,7 @@ while True:
                 motor_on();  print("[ESP1] MOTOR ON")
             elif s == MSG_OFF:
                 motor_off(); print("[ESP1] MOTOR OFF")
+                break
             else:
                 print("[ESP1] unhandled:", s)
     except OSError:
