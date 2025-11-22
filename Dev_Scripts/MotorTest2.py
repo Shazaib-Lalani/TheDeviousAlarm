@@ -60,36 +60,31 @@ class A4988Stepper:
         Move the motor by a given angle.
 
         angle_deg   : angle to move (in degrees, positive number)
-                      1 step = 1.8 degrees by default.
+                      1 step = 1.8 degrees 
         rpm         : motor speed in revolutions per minute (> 0)
         dir_level   : logic level to write to DIR pin (0 or 1)
-                      You choose which level is "forward" based on wiring.
         hold_enabled: if False, disables driver after movement
         """
 
         if rpm <= 0:
             raise ValueError("rpm must be > 0")
 
-        # Set direction explicitly from user input
+        # set motor direction 
         self.dir.value(1 if dir_level else 0)
 
         # Convert degrees to number of full steps
         angle_deg = abs(angle_deg)
         steps = int(round(angle_deg / self.step_angle_deg))
-        print("Steps = " + str(steps))
+        #print("Steps = " + str(steps))
         if steps == 0:
+            print("Angle Value too Low")
             return
 
         # Compute pulse timing from RPM
-        # steps_per_sec = rpm * steps_per_rev / 60
         steps_per_sec = rpm * self.steps_per_rev / 60.0
         period_s = 1.0 / steps_per_sec
         half_period_us = int(period_s * 1_000_000 / 2)
         print("Half Period = " + str(half_period_us ) + " microseconds")
-
-        # Clamp to a minimum delay to avoid insane speeds
-        #if half_period_us < 2:
-        #    half_period_us = 2
 
         self._enable_driver()
 
@@ -161,21 +156,18 @@ while True:
             # actuate motor
             print("[ESP1] MOTOR ON " + str(i))
             rst(1)
+            #motor.move_degrees(1.8 , 120,1,hold_enabled=True)
+            #motor.move_degrees(1.8 * 2 , 240,1, hold_enabled=True)
+            #motor.move_degrees(108, 360, 1, hold_enabled=True)
+            #sleep(0.2)
             motor.move_degrees(1.8 , 120,1,hold_enabled=True)
-            motor.move_degrees(1.8 , 240,1, hold_enabled=True)
-            motor.move_degrees(1.8 * 2, 360, 1, hold_enabled=True)
-            motor.move_degrees(108, 480, 1, hold_enabled=True)
+            motor.move_degrees(1.8 * 2 , 240,1, hold_enabled=True)
+            motor.move_degrees(108, 360, 1, hold_enabled=True)
             sleep(0.2)
             motor.move_degrees(1.8, 120,0,hold_enabled=True)
-            motor.move_degrees(1.8, 240,0, hold_enabled=True)
-            motor.move_degrees(1.8 * 2, 360,0, hold_enabled=True)
-            motor.move_degrees(108, 480, 0, hold_enabled=True)
+            motor.move_degrees((1.8 * 2) + 108, 240,0, hold_enabled=True)
             sleep(0.2)
                     
-            #motor.move_degrees(90, 240, 1, hold_enabled=True)
-            #sleep(0.2)
-            #motor.move_degrees(90, 240, 0, hold_enabled=True)
-            #sleep(0.2)
             i += 1
                     
             # Check for a new message to stop the motor
