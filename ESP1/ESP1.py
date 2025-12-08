@@ -25,9 +25,9 @@ class A4988Stepper:
             self.enable = Pin(enable_pin, Pin.OUT, value=1)  # start disabled
             
         self.slp = None
-        if enable_pin is not None:
+        if slp_pin is not None:
             # A4988 ENABLE: LOW = enabled, HIGH = disabled
-            self.slp = Pin(enable_pin, Pin.OUT, value=1)  # start awake
+            self.slp = Pin(slp_pin, Pin.OUT, value=0)  # start asleep
 
         self.step_angle_deg = step_angle_deg
         # Full steps per revolution (e.g. 360 / 1.8 = 200)
@@ -35,11 +35,11 @@ class A4988Stepper:
 
     def _enable_driver(self):
         if self.enable is not None:
-            self.enable.value(0)   # LOW = enabled
+            self.enable.value(0)   
 
     def _disable_driver(self):
         if self.enable is not None:
-            self.enable.value(1)   # HIGH = disabled
+            self.enable.value(1)  
 
     def enable(self):
         """Public helper to enable the driver (hold torque)."""
@@ -51,11 +51,11 @@ class A4988Stepper:
         
     def _sleep_driver(self):
         if self.slp is not None:
-            self.slp.value(0)   # LOW = enabled
+            self.slp.value(0)   
 
     def _awake_driver(self):
         if self.slp is not None:
-            self.slp.value(1)   # HIGH = disabled
+            self.slp.value(1)  
 
     def sleep(self):
         """Public helper to enable the driver (hold torque)."""
@@ -101,15 +101,10 @@ class A4988Stepper:
             return
 
         # Compute pulse timing from RPM
-        # steps_per_sec = rpm * steps_per_rev / 60
         steps_per_sec = rpm * self.steps_per_rev / 60.0
         period_s = 1.0 / steps_per_sec
         half_period_us = int(period_s * 1_000_000 / 2)
         print("Half Period = " + str(half_period_us ) + " microseconds")
-
-        # Clamp to a minimum delay to avoid insane speeds
-        #if half_period_us < 2:
-        #    half_period_us = 2
 
         self._enable_driver()
 
@@ -120,8 +115,8 @@ class A4988Stepper:
             self._disable_driver()
             
     def home_position(self, lmt_pin, rpm, dir_level):
-        while lmt_pin.value() = 1:
-            motor.move_degrees(1.8, 60, dir_level,hold_enabled=True)        
+        while lmt_pin.value() == 1:
+            self.move_degrees(1.8, 60, dir_level,hold_enabled=True)        
 
 # --- motor setup 
 STEP_PIN   = 25
@@ -137,17 +132,16 @@ motor = A4988Stepper(
     step_angle_deg=1.8  # 1 full step = 1.8°
     )
 
-
 # ====== Mac Address Set Up ======
 MAC_COORD = b"\x14\x2b\x2f\xae\xbe\x44"   
 CHANNEL   = 1
 
 # ========Defining what Messages Will Be Received================
-ALM_1 = "Alarm 1"
-ALM_2 = "Alarm 2"
-ALM_3 = "Alarm 3"
-PS = "Pause"
-SD = "Shut Down"
+ALM_1 = "ALARM 1"
+ALM_2 = "ALARM 2"
+ALM_3 = "ALARM 3"
+PS = "PAUSE"
+SD = "SHUTDOWN"
 
 # ======== Radio / ESP-NOW Initialization ================
 wlan = network.WLAN(network.STA_IF)
@@ -169,10 +163,14 @@ fet = Pin(15, Pin.OUT)
 fet.value(0)
 
 # ===== Homing Motor ========
+motor.enable()
+motor.awake()
 #motor.home_position(self, lmt, 60, 0)
+motor.sleep()
 
 # logic loop
 while True:
+    
     try:
         mac, msg = e.recv(0)
         if mac and msg:
@@ -182,6 +180,7 @@ while True:
                 s = str(msg)
 
             if s == ALM_1 or s == ALM_2:
+                motor.awake()
                 motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
                 motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
                 motor.move_degrees(1.8 * 4 , 120,1,hold_enabled=True)
@@ -197,7 +196,9 @@ while True:
                 time.sleep(0.2)
                         
             elif s == ALM_3:
-                                motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
+                motor.awake()
+                
+                motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
                 motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
                 motor.move_degrees(1.8 * 4 , 120,1,hold_enabled=True)
                 motor.move_degrees((120 * 2) - (1.8 * 8), 120,1, hold_enabled=True)
@@ -226,8 +227,5 @@ while True:
                 motor.disable()
                 break
             
-                
-        
-            
-            
-    
+    except Exception as err:
+        print("Error In Message Receiving:", err)
