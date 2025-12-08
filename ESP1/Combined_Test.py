@@ -11,12 +11,13 @@ import utime
 
 # --- Motor Definitions ---
 class A4988Stepper:
-    def __init__(self, step_pin, dir_pin, enable_pin=None, step_angle_deg=1.8):
+    def __init__(self, step_pin, dir_pin, enable_pin=None, slp_pin=None, step_angle_deg=1.8):
         """
         step_pin      : GPIO number for STEP
         dir_pin       : GPIO number for DIR
-        enable_pin    : GPIO number for ENABLE (optional, can be None)
-        step_angle_deg: motor step angle in degrees (1.8° for most NEMA 17)
+        enable_pin    : GPIO number for ENABLE (can be None)
+        slp_pin    : GPIO number for SLEEP (can be None)
+        step_angle_deg: motor step angle in degrees (1.8°)
         """
         self.step = Pin(step_pin, Pin.OUT, value=0)
         self.dir  = Pin(dir_pin,  Pin.OUT, value=0)
@@ -25,6 +26,11 @@ class A4988Stepper:
         if enable_pin is not None:
             # A4988 ENABLE: LOW = enabled, HIGH = disabled
             self.enable = Pin(enable_pin, Pin.OUT, value=1)  # start disabled
+            
+        self.slp = None
+        if enable_pin is not None:
+            # A4988 ENABLE: LOW = enabled, HIGH = disabled
+            self.slp = Pin(enable_pin, Pin.OUT, value=1)  # start awake
 
         self.step_angle_deg = step_angle_deg
         # Full steps per revolution (e.g. 360 / 1.8 = 200)
@@ -45,7 +51,23 @@ class A4988Stepper:
     def disable(self):
         """Public helper to disable the driver (motor off, no holding torque)."""
         self._disable_driver()
+        
+    def _sleep_driver(self):
+        if self.slp is not None:
+            self.slp.value(0)   # LOW = enabled
 
+    def _awake_driver(self):
+        if self.slp is not None:
+            self.slp.value(1)   # HIGH = disabled
+
+    def sleep(self):
+        """Public helper to enable the driver (hold torque)."""
+        self._sleep_driver()
+
+    def awake(self):
+        """Public helper to disable the driver (motor off, no holding torque)."""
+        self._awake_driver()
+        
     def _step_once(self, delay_us):
         """
         Generate one step pulse with a given half-period delay (microseconds).
@@ -100,8 +122,8 @@ class A4988Stepper:
         if not hold_enabled:
             self._disable_driver()
 
-# ====== EDIT THESE ======
-MAC_COORD = b"\x14\x2b\x2f\xae\xbe\x44"   # <-- paste ESP3 (door) STA MAC
+# ====== ESP3 Communication Definitions ======
+MAC_COORD = b"\x14\x2b\x2f\xae\xbe\x44"   
 CHANNEL   = 1
 # ========================
 
@@ -127,12 +149,13 @@ e.add_peer(MAC_COORD)
 STEP_PIN   = 25
 DIR_PIN    = 26
 ENABLE_PIN = 14
-RESET_PIN = 32
+SLEEP_PIN = 32
 
 motor = A4988Stepper(
     step_pin=STEP_PIN,
     dir_pin=DIR_PIN,
     enable_pin=ENABLE_PIN,
+    slp_pin=SLEEP_PIN,
     step_angle_deg=1.8  # 1 full step = 1.8°
     )
 
@@ -141,19 +164,12 @@ def motor_off():
     motor.disable()
 
 print("[ESP1] Ready.")
-rst = Pin(32, machine.Pin.OUT)
-rst(0)
-sleep(0.5)
-rst(1)
-
-slp = Pin(ENABLE_PIN, machine.Pin.OUT)
-
-slp.value(0)
-
 
 fet = Pin(15, Pin.OUT)
-
 fet.value(0)
+
+motor.enable()
+motor.awake()
 
 i = 1
 for j in range(1,4):
@@ -185,7 +201,8 @@ for j in range(1,4):
     i += 1
              
 fet.value(0)
-slp.value(1)
+motor.sleep()
+motor.disable()
     #fet.value(0)
     #time.sleep(1)
     #fet.value(1)
