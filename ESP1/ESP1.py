@@ -96,7 +96,7 @@ class A4988Stepper:
         # Convert degrees to number of full steps
         angle_deg = abs(angle_deg)
         steps = int(round(angle_deg / self.step_angle_deg))
-        print("Steps = " + str(steps))
+        #print("Steps = " + str(steps))
         if steps == 0:
             return
 
@@ -104,7 +104,7 @@ class A4988Stepper:
         steps_per_sec = rpm * self.steps_per_rev / 60.0
         period_s = 1.0 / steps_per_sec
         half_period_us = int(period_s * 1_000_000 / 2)
-        print("Half Period = " + str(half_period_us ) + " microseconds")
+        #print("Half Period = " + str(half_period_us ) + " microseconds")
 
         self._enable_driver()
 
@@ -169,8 +169,7 @@ motor.awake()
 motor.sleep()
 
 # logic loop
-while True:
-    
+while True:  
     try:
         mac, msg = e.recv(0)
         if mac and msg:
@@ -178,8 +177,13 @@ while True:
                 s = msg.decode("utf-8")
             except:
                 s = str(msg)
+                
+            print(s)
+            if s != "bomba":
+                st = s
 
-            if s == ALM_1 or s == ALM_2:
+            if st == ALM_1 or st == ALM_2:
+                print("==== ALARM 1 or 2 ====")
                 motor.awake()
                 motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
                 motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
@@ -195,7 +199,8 @@ while True:
                 
                 time.sleep(0.2)
                         
-            elif s == ALM_3:
+            elif st == ALM_3:
+                print("==== ALARM 3 ====")
                 motor.awake()
                 
                 motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
@@ -216,12 +221,14 @@ while True:
                 time.sleep(0.2)
         
                 
-            elif s == PS:  
+            elif st == PS:
+                print("==== Pause ====")
                 fet.value(0)
                 #motor.home_position(self, lmt, 60, 0)
                 motor.sleep()
                 
-            elif s == SD:
+            elif st == SD:
+                print("==== Shut Down ====")
                 fet.value(0)
                 #motor.home_position(self, lmt, 60, 0)
                 motor.disable()
