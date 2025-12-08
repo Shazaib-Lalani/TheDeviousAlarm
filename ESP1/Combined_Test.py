@@ -146,25 +146,47 @@ rst(0)
 sleep(0.5)
 rst(1)
 
+slp = Pin(ENABLE_PIN, machine.Pin.OUT)
+
+slp.value(0)
+
+
 fet = Pin(15, Pin.OUT)
 
-
+fet.value(0)
 
 i = 1
-while True:
+for j in range(1,4):
     # actuate motor
     print("[ESP1] MOTOR ON " + str(i))
-    rst(1)
-    motor.move_degrees(1.8 , 120,1,hold_enabled=True)
-    motor.move_degrees(1.8 * 2 , 240,1, hold_enabled=True)
-    motor.move_degrees(108, 360, 1, hold_enabled=True)
-    sleep(0.2)
-    motor.move_degrees(1.8, 120,0,hold_enabled=True)
-    motor.move_degrees((1.8 * 2) + 108, 240,0, hold_enabled=True)
-    sleep(0.2)
-    i += 1
-                    
-    fet.value(0)
-    time.sleep(1)
+#     rst(1)
+    motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
+    motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
+    motor.move_degrees(1.8 * 4 , 120,1,hold_enabled=True)
+    motor.move_degrees((120 * 2) - (1.8 * 8), 120,1, hold_enabled=True)
+   
+    time.sleep(0.2)
+    
+    motor.move_degrees(1.8 * 4 , 15,0,hold_enabled=True)
+    motor.move_degrees(1.8 * 4 , 30,0,hold_enabled=True)
+    motor.move_degrees((120 * 2) - (1.8 * 8), 60,0, hold_enabled=True)
+        
     fet.value(1)
-    time.sleep(1)
+    time.sleep(0.2)
+    fet.value(0)
+    time.sleep(0.2)
+        
+    
+    #motor.move_degrees(108, 240, 1, hold_enabled=True)
+    #sleep(0.2)
+    #motor.move_degrees(1.8, 120,0,hold_enabled=True)
+    #motor.move_degrees((1.8 * 2) + 108, 120,0, hold_enabled=True)
+    #sleep(0.2)
+    i += 1
+             
+fet.value(0)
+slp.value(1)
+    #fet.value(0)
+    #time.sleep(1)
+    #fet.value(1)
+    #time.sleep(1)
