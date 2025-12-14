@@ -146,7 +146,79 @@ class A4988Stepper:
             else:
                 self.move_degrees(1.8 * 2, rpm, dir_level, hold_enabled=True, accel_frac=0, min_rpm=rpm)
             ind += 1
-                
+              
+def sync_to_latest(max_reads=300, max_ms=20):
+    """
+    Bounded catch-up: discard backlog without getting stuck if messages arrive
+    continuously.
+
+    Reads and discards up to max_reads packets OR for up to max_ms milliseconds,
+    then stops. Safe even if the sender is spamming.
+    """
+    start = time.ticks_ms()
+    reads = 0
+
+    while reads < max_reads and time.ticks_diff(time.ticks_ms(), start) < max_ms:
+        pkt = e.recv(0)   # non-blocking
+        if not pkt:
+            break         # queue empty right now
+        reads += 1
+
+
+def get_next_non_ping():
+    """
+    AFTER you've flushed, wait for the next message that is not 'PING'.
+    Ignores PINGs that arrive going forward.
+    Returns the first non-PING message string.
+    """
+    while True:
+        pkt = e.recv(0)  # non-blocking
+        if not pkt:
+            time.sleep(0.005)   # tiny yield so you don't spin at 100% CPU
+            continue
+
+        mac, msg = pkt
+        if not (mac and msg):
+            continue
+
+        try:
+            s = msg.decode("utf-8").strip()
+        except:
+            s = str(msg).strip()
+
+        if s == "PING":
+            continue  # keep looping until NOT a ping
+
+        break  # got a non-PING message -> use it
+    
+    return s
+                       
+def check_interrupt(ind):
+    sync_to_latest(max_reads=300, max_ms=100)
+
+    # Now wait for the next non-ping message that arrives AFTER this point
+    s = get_next_non_ping()
+
+    # 2) outside the loop: handle pause/shutdown once
+    if s == PS:
+        print("==== Pause from Interrupt ====")
+        fet.value(0)
+        if ind == 1:
+            motor.home_position(limitSwitch, 10, 0)
+        motor.disable()
+        return PS  # return the message (or return True if you prefer)
+
+    if s == SD:
+        print("==== Shut Down from Interrupt ====")
+        fet.value(0)
+        motor.home_position(limitSwitch, 10, 0)
+        motor.disable()
+        raise SystemExit
+
+    # 3) otherwise just return the non-PING message (e.g. ALARM 1/2/3)
+    return s
+
+
 
 # --- motor setup 
 STEP_PIN   = 25
@@ -202,71 +274,79 @@ motor.home_position(limitSwitch, 10, 0)
 motor.disable()
 
 # logic loop
-while True:  
+ind = 1
+while True:
     try:
-        mac, msg = e.recv(0)
-        if mac and msg:
-            try:
-                s = msg.decode("utf-8")
-            except:
-                s = str(msg)
-                
-            print("s = " + s)
-            if s != "bomba":
-                st = s
-                
-            print("st = " + st)
-
-            if st == ALM_1 or st == ALM_2:
-                print("==== ALARM 1 or 2 ====")
-                motor.enable()
-                motor.awake()
-                
-                motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
-                
-                time.sleep(0.02)
-                motor.disable()
-                time.sleep(1)
-                motor.enable()
-    
-                motor.home_position(limitSwitch, 10, 0)
-                
-                time.sleep(0.2)
-                        
-            elif st == ALM_3:
-                print("==== ALARM 3 ====")
-                motor.enable()
-                motor.awake()
-                
-                motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
-                
-                time.sleep(0.02)
-                motor.disable()
-                time.sleep(1)
-                motor.enable()
-    
-                motor.home_position(limitSwitch, 10, 0)
-                
-                time.sleep(1) 
-                
-                fet.value(1)
-                time.sleep(0.4)
-                fet.value(0)
-                time.sleep(0.4)
+        sync_to_latest(max_reads=300, max_ms=100)
         
-                
-            elif st == PS:
-                print("==== Pause ====")
-                fet.value(0)
-                motor.home_position(limitSwitch, 10, 0)
-                motor.disable()
-                
-            elif st == SD:
-                print("==== Shut Down ====")
-                fet.value(0)
-                motor.home_position(limitSwitch, 10, 0)
-                motor.disable()
-                break
+        s = get_next_non_ping()
+        
+        print("s = " + s)
+
+        if s == ALM_1 or s == ALM_2:
+            ind = 1
+            print("==== ALARM 1 or 2 ====")
+            motor.enable()
+            motor.awake()
+
+            motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
             
+            s = check_interrupt(ind)
+            
+            time.sleep(0.02)
+            motor.disable()
+            time.sleep(1)
+            motor.enable()
+            
+            s = check_interrupt(ind)
+            
+            motor.home_position(limitSwitch, 10, 0)
+            time.sleep(0.2)
+
+        elif s == ALM_3:
+            ind = 1
+            print("==== ALARM 3 ====")
+            motor.enable()
+            motor.awake()
+
+            motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
+            
+            s = check_interrupt(ind)
+            
+            time.sleep(0.02)
+            motor.disable()
+            time.sleep(1)
+            motor.enable()
+
+            s = check_interrupt(ind)
+
+            motor.home_position(limitSwitch, 10, 0)
+
+            s = check_interrupt(ind)
+            
+            time.sleep(0.4)
+            fet.value(1)
+            time.sleep(0.4)
+            fet.value(0)
+            time.sleep(0.4)
+
+        elif s == PS:
+            print("==== Pause ====")
+            fet.value(0)
+            if ind == 1:
+                motor.home_position(limitSwitch, 10, 0)
+            motor.disable()
+            ind += 1
+
+        elif s == SD:
+            print("==== Shut Down ====")
+            fet.value(0)
+            motor.home_position(limitSwitch, 10, 0)
+            motor.disable()
+            break
+
+    except SystemExit:
+        break
     except Exception as err:
         print("Error In Message Receiving:", err)
+        time.sleep(0.1)
