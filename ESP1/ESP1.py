@@ -64,6 +64,22 @@ class A4988Stepper:
     def awake(self):
         """Public helper to disable the driver (motor off, no holding torque)."""
         self._awake_driver()
+    
+    def _rpm_to_delay_us(self, rpm):
+        """
+        Convert RPM to half-period delay in microseconds for one step pulse.
+        """
+        if rpm <= 0:
+            rpm = 1  # avoid divide by zero
+        steps_per_sec = rpm * self.steps_per_rev / 60.0
+        period_s = 1.0 / steps_per_sec
+        half_period_us = int(period_s * 1_000_000 / 2)
+
+        # Clamp to something sane so we don't go crazy-fast
+        if half_period_us < 2:
+            half_period_us = 2
+
+        return half_period_us
         
     def _step_once(self, delay_us):
         """
@@ -75,48 +91,62 @@ class A4988Stepper:
         self.step.value(0)
         time.sleep_us(delay_us)
 
-    def move_degrees(self, angle_deg, rpm, dir_level, hold_enabled=False):
+    def move_degrees(self, angle_deg, rpm_target, dir_level,
+                     hold_enabled=False, accel_frac=0.4, min_rpm=5):
         """
-        Move the motor by a given angle.
+        Move the motor by a given angle with acceleration only (no decel).
 
-        angle_deg   : angle to move (in degrees, positive number)
-                      1 step = 1.8 degrees by default.
-        rpm         : motor speed in revolutions per minute (> 0)
-        dir_level   : logic level to write to DIR pin (0 or 1)
-                      You choose which level is "forward" based on wiring.
-        hold_enabled: if False, disables driver after movement
+        angle_deg   : positive angle in degrees
+        rpm_target  : target cruising speed
+        dir_level   : 0 or 1 for DIR pin
+        hold_enabled: keep driver enabled at the end if True
+        accel_frac  : fraction of steps used to accelerate up to rpm_target
+        min_rpm     : starting rpm at the beginning of the move
         """
-
-        if rpm <= 0:
+        if rpm_target <= 0:
             raise ValueError("rpm must be > 0")
 
-        # Set direction explicitly from user input
+        # Set direction
         self.dir.value(1 if dir_level else 0)
 
-        # Convert degrees to number of full steps
         angle_deg = abs(angle_deg)
-        steps = int(round(angle_deg / self.step_angle_deg))
-        #print("Steps = " + str(steps))
-        if steps == 0:
+        total_steps = int(round(angle_deg / self.step_angle_deg))
+        if total_steps <= 0:
             return
 
-        # Compute pulse timing from RPM
-        steps_per_sec = rpm * self.steps_per_rev / 60.0
-        period_s = 1.0 / steps_per_sec
-        half_period_us = int(period_s * 1_000_000 / 2)
-        #print("Half Period = " + str(half_period_us ) + " microseconds")
+        # Steps used for acceleration (rest at full speed)
+        accel_steps = int(total_steps * accel_frac)
+        if accel_steps < 1:
+            accel_steps = 1
+        if accel_steps > total_steps:
+            accel_steps = total_steps
 
         self._enable_driver()
 
-        for _ in range(steps):
-            self._step_once(half_period_us)
+        for i in range(total_steps):
+            # Accelerate from min_rpm to rpm_target over accel_steps
+            if i < accel_steps:
+                phase = i / max(1, accel_steps - 1)
+                rpm = min_rpm + (rpm_target - min_rpm) * phase
+            else:
+                # After accel phase, stay at full rpm_target (no decel)
+                rpm = rpm_target
+
+            delay_us = self._rpm_to_delay_us(rpm)
+            self._step_once(delay_us)
 
         if not hold_enabled:
             self._disable_driver()
             
-    def home_position(self, lmt_pin, rpm, dir_level):
-        while lmt_pin.value() == 1:
-            self.move_degrees(1.8, 60, dir_level,hold_enabled=True)        
+    def home_position(self, lmt, rpm, dir_level):
+        ind = 1
+        while lmt.value() == 1:
+            if ind == 1:
+                self.move_degrees(1.8 * 2, rpm, dir_level, hold_enabled=True, accel_frac=0.6, min_rpm=3)
+            else:
+                self.move_degrees(1.8 * 2, rpm, dir_level, hold_enabled=True, accel_frac=0, min_rpm=rpm)
+            ind += 1
+                
 
 # --- motor setup 
 STEP_PIN   = 25
@@ -162,11 +192,14 @@ e.add_peer(MAC_COORD)
 fet = Pin(15, Pin.OUT)
 fet.value(0)
 
+# ======= Limit Switch Initialization =========
+limitSwitch = Pin(4, Pin.IN, Pin.PULL_UP)
+
 # ===== Homing Motor ========
 motor.enable()
 motor.awake()
-#motor.home_position(self, lmt, 60, 0)
-motor.sleep()
+motor.home_position(limitSwitch, 10, 0)
+motor.disable()
 
 # logic loop
 while True:  
@@ -178,59 +211,60 @@ while True:
             except:
                 s = str(msg)
                 
-            print(s)
+            print("s = " + s)
             if s != "bomba":
                 st = s
+                
+            print("st = " + st)
 
             if st == ALM_1 or st == ALM_2:
                 print("==== ALARM 1 or 2 ====")
+                motor.enable()
                 motor.awake()
-                motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 120,1,hold_enabled=True)
-                motor.move_degrees((120 * 2) - (1.8 * 8), 120,1, hold_enabled=True)
-   
-                time.sleep(0.2)
+                
+                motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
+                
+                time.sleep(0.02)
+                motor.disable()
+                time.sleep(1)
+                motor.enable()
     
-                motor.move_degrees(1.8 * 4 , 15,0,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 30,0,hold_enabled=True)
-                motor.move_degrees((120 * 2) - (1.8 * 8), 60,0, hold_enabled=True)
-                #motor.home_position(self, lmt, 60, 0)
+                motor.home_position(limitSwitch, 10, 0)
                 
                 time.sleep(0.2)
                         
             elif st == ALM_3:
                 print("==== ALARM 3 ====")
+                motor.enable()
                 motor.awake()
                 
-                motor.move_degrees(1.8 * 4 , 30,1,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 60,1,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 120,1,hold_enabled=True)
-                motor.move_degrees((120 * 2) - (1.8 * 8), 120,1, hold_enabled=True)
-   
-                time.sleep(0.2)
+                motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
+                
+                time.sleep(0.02)
+                motor.disable()
+                time.sleep(1)
+                motor.enable()
     
-                motor.move_degrees(1.8 * 4 , 15,0,hold_enabled=True)
-                motor.move_degrees(1.8 * 4 , 30,0,hold_enabled=True)
-                motor.move_degrees((120 * 2) - (1.8 * 8), 60,0, hold_enabled=True)
-                #motor.home_position(self, lmt, 60, 0)
+                motor.home_position(limitSwitch, 10, 0)
+                
+                time.sleep(1) 
                 
                 fet.value(1)
-                time.sleep(0.2)
+                time.sleep(0.4)
                 fet.value(0)
-                time.sleep(0.2)
+                time.sleep(0.4)
         
                 
             elif st == PS:
                 print("==== Pause ====")
                 fet.value(0)
-                #motor.home_position(self, lmt, 60, 0)
-                motor.sleep()
+                motor.home_position(limitSwitch, 10, 0)
+                motor.disable()
                 
             elif st == SD:
                 print("==== Shut Down ====")
                 fet.value(0)
-                #motor.home_position(self, lmt, 60, 0)
+                motor.home_position(limitSwitch, 10, 0)
                 motor.disable()
                 break
             

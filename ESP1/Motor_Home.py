@@ -64,22 +64,6 @@ class A4988Stepper:
     def awake(self):
         """Public helper to disable the driver (motor off, no holding torque)."""
         self._awake_driver()
-    
-    def _rpm_to_delay_us(self, rpm):
-        """
-        Convert RPM to half-period delay in microseconds for one step pulse.
-        """
-        if rpm <= 0:
-            rpm = 1  # avoid divide by zero
-        steps_per_sec = rpm * self.steps_per_rev / 60.0
-        period_s = 1.0 / steps_per_sec
-        half_period_us = int(period_s * 1_000_000 / 2)
-
-        # Clamp to something sane so we don't go crazy-fast
-        if half_period_us < 2:
-            half_period_us = 2
-
-        return half_period_us
         
     def _step_once(self, delay_us):
         """
@@ -91,63 +75,51 @@ class A4988Stepper:
         self.step.value(0)
         time.sleep_us(delay_us)
 
-    def move_degrees(self, angle_deg, rpm_target, dir_level,
-                     hold_enabled=False, accel_frac=0.4, min_rpm=5):
+    def move_degrees(self, angle_deg, rpm, dir_level, hold_enabled=False):
         """
-        Move the motor by a given angle with acceleration only (no decel).
+        Move the motor by a given angle.
 
-        angle_deg   : positive angle in degrees
-        rpm_target  : target cruising speed
-        dir_level   : 0 or 1 for DIR pin
-        hold_enabled: keep driver enabled at the end if True
-        accel_frac  : fraction of steps used to accelerate up to rpm_target
-        min_rpm     : starting rpm at the beginning of the move
+        angle_deg   : angle to move (in degrees, positive number)
+                      1 step = 1.8 degrees by default.
+        rpm         : motor speed in revolutions per minute (> 0)
+        dir_level   : logic level to write to DIR pin (0 or 1)
+                      You choose which level is "forward" based on wiring.
+        hold_enabled: if False, disables driver after movement
         """
-        if rpm_target <= 0:
+
+        if rpm <= 0:
             raise ValueError("rpm must be > 0")
 
-        # Set direction
+        # Set direction explicitly from user input
         self.dir.value(1 if dir_level else 0)
 
+        # Convert degrees to number of full steps
         angle_deg = abs(angle_deg)
-        total_steps = int(round(angle_deg / self.step_angle_deg))
-        if total_steps <= 0:
+        steps = int(round(angle_deg / self.step_angle_deg))
+        #print("Steps = " + str(steps))
+        if steps == 0:
             return
 
-        # Steps used for acceleration (rest at full speed)
-        accel_steps = int(total_steps * accel_frac)
-        if accel_steps < 1:
-            accel_steps = 1
-        if accel_steps > total_steps:
-            accel_steps = total_steps
+        # Compute pulse timing from RPM
+        steps_per_sec = rpm * self.steps_per_rev / 60.0
+        period_s = 1.0 / steps_per_sec
+        half_period_us = int(period_s * 1_000_000 / 2)
+        #print("Half Period = " + str(half_period_us ) + " microseconds")
 
         self._enable_driver()
 
-        for i in range(total_steps):
-            # Accelerate from min_rpm to rpm_target over accel_steps
-            if i < accel_steps:
-                phase = i / max(1, accel_steps - 1)
-                rpm = min_rpm + (rpm_target - min_rpm) * phase
-            else:
-                # After accel phase, stay at full rpm_target (no decel)
-                rpm = rpm_target
-
-            delay_us = self._rpm_to_delay_us(rpm)
-            self._step_once(delay_us)
+        for _ in range(steps):
+            self._step_once(half_period_us)
 
         if not hold_enabled:
             self._disable_driver()
             
     def home_position(self, lmt, rpm, dir_level):
-        ind = 1
-        while lmt.value() == 1:
-            if ind == 1:
-                self.move_degrees(1.8 * 2, rpm, dir_level, hold_enabled=True, accel_frac=0.6, min_rpm=3)
-            else:
-                self.move_degrees(1.8 * 2, rpm, dir_level, hold_enabled=True, accel_frac=0, min_rpm=rpm)
-            ind += 1
-            
-                
+        print("in function")
+        while lmt.value() > 0:
+            print("in while loop")
+            print(lmt.value())
+            self.move_degrees(1.8, rpm, dir_level,hold_enabled=True)        
 
 # --- motor setup 
 STEP_PIN   = 25
@@ -195,38 +167,11 @@ fet.value(0)
 
 # ======= Limit Switch Initialization =========
 limitSwitch = Pin(4, Pin.IN, Pin.PULL_UP)
+print(limitSwitch.value())
 
 # ===== Homing Motor ========
 motor.enable()
 motor.awake()
-motor.home_position(limitSwitch, 10, 0)
-motor.disable()
-
-time.sleep(3)
-
-for j in range(1,4):
-    # actuate motor
-    print(j)
-    motor.enable()
-    motor.awake()
-                
-    motor.move_degrees(180, 100, 1, hold_enabled=True, accel_frac=0.4, min_rpm=10)
-    
-    time.sleep(0.02)
-    motor.disable()
-    time.sleep(1)
-    motor.enable()
-    
-    motor.home_position(limitSwitch, 10, 0)
-                
-    time.sleep(1) 
-            
-    fet.value(1)
-    time.sleep(0.4)
-    fet.value(0)
-    time.sleep(0.4)
-        
-             
-fet.value(0)
+print("gets here")
+motor.home_position(limitSwitch, 15, 0)
 motor.sleep()
-motor.disable()
